@@ -93,6 +93,27 @@ cmd_compile_deb() {
   log "${NAME}.deb generado"
 }
 
+cmd_compile_rpm() {
+  local SRC="$1"
+  local NAME
+  NAME=$(pkg_name "$SRC")
+
+  [ -f "${NAME}.deb" ] || error "Falta ${NAME}.deb (ejecuta pkg compile deb $SRC)"
+
+  log "Convirtiendo ${NAME}.deb → RPM con alien"
+  sudo alien -r "${NAME}.deb"
+
+  # Encontrar el rpm generado
+  local RPM_FILE
+  RPM_FILE=$(ls "${NAME}-"*.rpm 2>/dev/null | head -n 1) \
+    || error "Alien no generó ningún .rpm"
+
+  log "Renombrando $(basename "$RPM_FILE") → ${NAME}.rpm"
+  mv "$RPM_FILE" "${NAME}.rpm"
+
+  log "${NAME}.rpm generado"
+}
+
 # -------------------------------------------------
 # pkg compile win <path>
 # -------------------------------------------------
@@ -123,8 +144,9 @@ case "${1:-}" in
   compile)
     case "${2:-}" in
       deb) cmd_compile_deb "${3:-}" ;;
+      rpm) cmd_compile_rpm "${3:-}" ;;
       win) cmd_compile_win "${3:-}" ;;
-      *) error "Uso: pkg compile {deb|win} <path>" ;;
+      *) error "Uso: pkg compile {deb|win|rpm} <path>" ;;
     esac
     ;;
   *)
