@@ -20,8 +20,8 @@ copy_if_exists() {
 cmd_dirs() {
   local SRC="$1"
   need_path "$SRC"
-  local NAME WIN="${NAME}-win"
-  NAME=$(pkg_name "$SRC")
+  local NAME=$(pkg_name "$SRC")
+  WIN="${NAME}-win"
 
   log "Reorganizando paquete: $NAME"
 
@@ -98,8 +98,7 @@ cmd_compile_rpm() {
 cmd_compile_win() {
   local SRC="$1"
   need_path "$SRC"
-  local NAME WIN="${NAME}-win"
-  NAME=$(pkg_name "$SRC")
+  local NAME=$(pkg_name "$SRC")
   WIN="${NAME}-win"
   local WXS="$WIN/${NAME}.wxs"
   [ -f "$WXS" ] || error "No existe $WXS (ejecuta pkg dirs <path>)"
