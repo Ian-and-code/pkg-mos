@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# -------------------------------------------------
+# Utilidades
+# -------------------------------------------------
 log() {
   echo "[*] $1"
 }
@@ -27,7 +30,7 @@ copy_if_exists() {
   local dst="$2"
 
   if [ -e "$src" ]; then
-    cp -r "$src" "$dst"
+    cp -a "$src" "$dst"
   else
     warn "No existe $src (omitido)"
   fi
@@ -44,10 +47,10 @@ cmd_dirs() {
   NAME=$(pkg_name "$SRC")
   local WIN="${NAME}-win"
 
-  log "Reorganizando $NAME"
+  log "Reorganizando paquete: $NAME"
 
   # -------- WINDOWS --------
-  log "Preparando $WIN"
+  log "Preparando estructura Windows: $WIN/"
   rm -rf "$WIN"
   mkdir -p "$WIN/bin" "$WIN/include"
 
@@ -61,7 +64,7 @@ cmd_dirs() {
   fi
 
   # -------- DEBIAN --------
-  log "Preparando estructura Debian"
+  log "Preparando estructura Debian en $SRC/usr/"
   mkdir -p "$SRC/usr/bin" "$SRC/usr/include"
 
   copy_if_exists "$SRC/bin/linux/." "$SRC/usr/bin/"
@@ -86,27 +89,32 @@ cmd_compile_deb() {
   NAME=$(pkg_name "$SRC")
 
   [ -d "$SRC/DEBIAN" ] || error "Falta DEBIAN/"
-  [ -d "$SRC/usr" ] || error "Falta usr/ (ejecuta pkg dirs)"
+  [ -d "$SRC/usr" ] || error "Falta usr/ (ejecuta: pkg dirs <path>)"
 
   log "Compilando ${NAME}.deb"
   dpkg-deb -b "$SRC" "${NAME}.deb"
   log "${NAME}.deb generado"
 }
 
+# -------------------------------------------------
+# pkg compile rpm <path>
+# -------------------------------------------------
 cmd_compile_rpm() {
   local SRC="$1"
   local NAME
   NAME=$(pkg_name "$SRC")
 
-  [ -f "${NAME}.deb" ] || error "Falta ${NAME}.deb (ejecuta pkg compile deb $SRC)"
+  [ -f "${NAME}.deb" ] || error "Falta ${NAME}.deb (ejecuta: pkg compile deb $SRC)"
 
   log "Convirtiendo ${NAME}.deb → RPM con alien"
+  rm -f ./*.rpm
   sudo alien -r "${NAME}.deb"
 
-  # Encontrar el rpm generado
   local RPM_FILE
-  RPM_FILE=$(ls "${NAME}-"*.rpm 2>/dev/null | head -n 1) \
-    || error "Alien no generó ningún .rpm"
+  RPM_FILE=$(find . -maxdepth 1 -type f -name "*.rpm" -printf "%T@ %p\n" \
+             | sort -nr | head -n1 | cut -d' ' -f2)
+
+  [ -n "$RPM_FILE" ] || error "Alien no generó ningún .rpm"
 
   log "Renombrando $(basename "$RPM_FILE") → ${NAME}.rpm"
   mv "$RPM_FILE" "${NAME}.rpm"
@@ -126,7 +134,7 @@ cmd_compile_win() {
   local WIN="${NAME}-win"
   local WXS="$WIN/${NAME}.wxs"
 
-  [ -f "$WXS" ] || error "No existe $WXS (ejecuta pkg dirs)"
+  [ -f "$WXS" ] || error "No existe $WXS (ejecuta: pkg dirs <path>)"
 
   log "Compilando ${NAME}.msi"
   (cd "$WIN" && wixl "${NAME}.wxs" -o "../${NAME}.msi")
@@ -142,18 +150,28 @@ case "${1:-}" in
     cmd_dirs "$2"
     ;;
   compile)
-    case "${2:-}" in
-      deb) cmd_compile_deb "${3:-}" ;;
-      rpm) cmd_compile_rpm "${3:-}" ;;
-      win) cmd_compile_win "${3:-}" ;;
-      *) error "Uso: pkg compile {deb|win|rpm} <path>" ;;
+    [ -n "${3:-}" ] || error "Uso: pkg compile {deb|rpm|win} <path>"
+    case "$2" in
+      deb) cmd_compile_deb "$3" ;;
+      rpm) cmd_compile_rpm "$3" ;;
+      win) cmd_compile_win "$3" ;;
+      *) error "Uso: pkg compile {deb|rpm|win} <path>" ;;
     esac
+    ;;
+  all)
+    [ -n "${2:-}" ] || error "Uso: pkg all <path>"
+    cmd_dirs "$2"
+    cmd_compile_deb "$2"
+    cmd_compile_rpm "$2"
+    cmd_compile_win "$2"
     ;;
   *)
     echo "Uso:"
     echo "  pkg dirs <path>"
     echo "  pkg compile deb <path>"
+    echo "  pkg compile rpm <path>"
     echo "  pkg compile win <path>"
+    echo "  pkg all <path>"
     exit 1
     ;;
 esac
