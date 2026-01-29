@@ -1,104 +1,145 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-need() { command -v "$1" >/dev/null || { echo "Falta $1"; exit 1; }; }
+# -------------------------------------------------
+# Utilidades
+# -------------------------------------------------
+log()   { echo "[*] $1"; }
+warn()  { echo "[!] $1"; }
+error() { echo "[✗] $1"; exit 1; }
+need_path() { [ -d "$1" ] || error "No existe: $1"; }
+pkg_name() { basename "$(realpath "$1")"; }
+copy_if_exists() {
+  local src="$1" dst="$2"
+  if [ -e "$src" ]; then cp -a "$src" "$dst"; else warn "No existe $src (omitido)"; fi
+}
 
-need tomlq
-need dpkg-deb
-need wixl
+# -------------------------------------------------
+# pkg dirs <path>
+# -------------------------------------------------
+cmd_dirs() {
+  local SRC="$1"
+  need_path "$SRC"
+  local NAME WIN="${NAME}-win"
+  NAME=$(pkg_name "$SRC")
 
-PKG_TOML="$1"
-[ -f "$PKG_TOML" ] || { echo "Uso: pkg.sh <pkg.toml>"; exit 1; }
+  log "Reorganizando paquete: $NAME"
 
-name=$(tomlq -r .package.name "$PKG_TOML")
+  # -------- WINDOWS --------
+  WIN="${NAME}-win"
+  log "Preparando estructura Windows: $WIN/"
+  rm -rf "$WIN"
+  mkdir -p "$WIN/bin" "$WIN/include"
 
-# ---------------- LINUX ----------------
-echo "[*] Generando Debian"
+  copy_if_exists "$SRC/bin/win/." "$WIN/bin/"
+  copy_if_exists "$SRC/include/." "$WIN/include/"
 
-rm -rf "$name"
-mkdir -p "$name/DEBIAN" "$name/usr/bin" "$name/usr/include/$name" "$name/usr/lib/$name"
+  # Si hay .wxs lo copia, sino nada
+  if [ -f "$SRC/${NAME}.wxs" ]; then
+    cp "$SRC/${NAME}.wxs" "$WIN/"
+  fi
 
-cat > "$name/DEBIAN/control" <<EOF
-Package: $name
-Section: $(tomlq -r .linux.section "$PKG_TOML")
-Priority: $(tomlq -r .linux.priority "$PKG_TOML")
-Architecture: $(tomlq -r .package.arch "$PKG_TOML")
-Depends: $(tomlq -r '.linux.depends | join(", ")' "$PKG_TOML")
-Maintainer: $(tomlq -r .linux.maintainer "$PKG_TOML")
-Description: $(tomlq -r .linux.description "$PKG_TOML")
-EOF
+  # -------- DEBIAN --------
+  log "Preparando estructura Debian en $SRC/usr/"
+  mkdir -p "$SRC/usr/bin" "$SRC/usr/include"
 
-cp -a bin/linux/. "$name/usr/bin/" 2>/dev/null || true
-cp -a include/. "$name/usr/include/$name/" 2>/dev/null || true
-cp -a lib/linux/. "$name/usr/lib/$name/" 2>/dev/null || true
+  copy_if_exists "$SRC/bin/linux/." "$SRC/usr/bin/"
+  copy_if_exists "$SRC/include/." "$SRC/usr/include/"
 
-chmod 755 "$name/usr/bin/"* 2>/dev/null || true
+  chmod 755 "$SRC/usr/bin/"* 2>/dev/null || true
+  chmod 644 "$SRC/DEBIAN/control" 2>/dev/null || true
 
-dpkg-deb -b "$name" "$name.deb"
-echo "[✓] $name.deb"
+  log "Listo"
+  echo "  - Windows: $WIN/"
+  echo "  - Debian:  $SRC/usr/"
+}
 
-# ---------------- WINDOWS ----------------
-echo "[*] Generando MSI"
+# -------------------------------------------------
+# pkg compile deb <path>
+# -------------------------------------------------
+cmd_compile_deb() {
+  local SRC="$1"
+  need_path "$SRC"
+  local NAME
+  NAME=$(pkg_name "$SRC")
+  [ -d "$SRC/DEBIAN" ] || error "Falta DEBIAN/"
+  [ -d "$SRC/usr" ] || error "Falta usr/ (ejecuta pkg dirs <path>)"
 
-WIN="$name-win"
-rm -rf "$WIN"
-mkdir -p "$WIN/bin"
+  log "Compilando ${NAME}.deb"
+  dpkg-deb -b "$SRC" "${NAME}.deb"
+  log "${NAME}.deb generado"
+}
 
-cp -a bin/win/. "$WIN/bin/"
+# -------------------------------------------------
+# pkg compile rpm <path>
+# -------------------------------------------------
+cmd_compile_rpm() {
+  local SRC="$1"
+  local NAME
+  NAME=$(pkg_name "$SRC")
+  [ -f "${NAME}.deb" ] || error "Falta ${NAME}.deb (ejecuta pkg compile deb $SRC)"
 
-GUID_PRODUCT=$(uuidgen)
+  log "Convirtiendo ${NAME}.deb → RPM con alien"
+  rm -f ./*.rpm
+  sudo alien -r "${NAME}.deb"
 
-cat > "$WIN/$name.wxs" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="$name"
-           Manufacturer="$(tomlq -r .win.manufacturer "$PKG_TOML")"
-           UpgradeCode="$GUID_PRODUCT">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"/>
+  local RPM_FILE
+  RPM_FILE=$(find . -maxdepth 1 -type f -name "*.rpm" -printf "%T@ %p\n" | sort -nr | head -n1 | cut -d' ' -f2)
+  [ -n "$RPM_FILE" ] || error "Alien no generó ningún .rpm"
 
-    <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder">
-        <Directory Id="INSTALLFOLDER" Name="$name">
-          <Directory Id="BIN" Name="bin">
-EOF
+  log "Renombrando $(basename "$RPM_FILE") → ${NAME}.rpm"
+  mv "$RPM_FILE" "${NAME}.rpm"
+  log "${NAME}.rpm generado"
+}
 
-while read -r exe; do
-  id=$(basename "$exe" .exe)
-  guid=$(uuidgen)
-  cat >> "$WIN/$name.wxs" <<EOF
-            <Component Id="$id" Guid="$guid">
-              <File Source="bin/$exe" KeyPath="yes"/>
-            </Component>
-EOF
-done < <(tomlq -r '.win.bins[]' "$PKG_TOML")
+# -------------------------------------------------
+# pkg compile win <path>
+# -------------------------------------------------
+cmd_compile_win() {
+  local SRC="$1"
+  need_path "$SRC"
+  local NAME WIN="${NAME}-win"
+  NAME=$(pkg_name "$SRC")
+  WIN="${NAME}-win"
+  local WXS="$WIN/${NAME}.wxs"
+  [ -f "$WXS" ] || error "No existe $WXS (ejecuta pkg dirs <path>)"
 
-cat >> "$WIN/$name.wxs" <<EOF
-          </Directory>
-        </Directory>
-      </Directory>
-    </Directory>
+  log "Compilando ${NAME}.msi"
+  (cd "$WIN" && wixl "${NAME}.wxs" -o "../${NAME}.msi")
+  log "${NAME}.msi generado"
+}
 
-    <Feature Id="Main" Level="1">
-EOF
-
-while read -r exe; do
-  id=$(basename "$exe" .exe)
-  echo "      <ComponentRef Id=\"$id\"/>" >> "$WIN/$name.wxs"
-done < <(tomlq -r '.win.bins[]' "$PKG_TOML")
-
-cat >> "$WIN/$name.wxs" <<EOF
-    </Feature>
-  </Product>
-</Wix>
-EOF
-
-(cd "$WIN" && wixl "$name.wxs" -o "../$name.msi")
-echo "[✓] $name.msi"
-
-# ---------------- RPM ----------------
-if command -v alien >/dev/null; then
-  echo "[*] Generando RPM"
-  sudo alien -r "$name.deb"
-  mv ./*.rpm "$name.rpm"
-  echo "[✓] $name.rpm"
-fi
+# -------------------------------------------------
+# Dispatch
+# -------------------------------------------------
+case "${1:-}" in
+  dirs)
+    [ -n "${2:-}" ] || error "Uso: pkg dirs <path>"
+    cmd_dirs "$2"
+    ;;
+  compile)
+    [ -n "${3:-}" ] || error "Uso: pkg compile {deb|rpm|win} <path>"
+    case "$2" in
+      deb) cmd_compile_deb "$3" ;;
+      rpm) cmd_compile_rpm "$3" ;;
+      win) cmd_compile_win "$3" ;;
+      *) error "Uso: pkg compile {deb|rpm|win} <path>" ;;
+    esac
+    ;;
+  all)
+    [ -n "${2:-}" ] || error "Uso: pkg all <path>"
+    cmd_dirs "$2"
+    cmd_compile_deb "$2"
+    cmd_compile_rpm "$2"
+    cmd_compile_win "$2"
+    ;;
+  *)
+    echo "Uso:"
+    echo "  pkg dirs <path>"
+    echo "  pkg compile deb <path>"
+    echo "  pkg compile rpm <path>"
+    echo "  pkg compile win <path>"
+    echo "  pkg all <path>"
+    exit 1
+    ;;
+esac
