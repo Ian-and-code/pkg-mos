@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-CMD="$1"
-SUBCMD="$2"
-PATH_IN="$3"
+log() {
+  echo "[*] $1"
+}
+
+warn() {
+  echo "[!] $1"
+}
 
 error() {
   echo "[✗] $1"
@@ -11,96 +15,115 @@ error() {
 }
 
 need_path() {
-  [ -z "$PATH_IN" ] && error "Falta <path>"
-  [ ! -d "$PATH_IN" ] && error "No existe: $PATH_IN"
+  [ -d "$1" ] || error "No existe: $1"
 }
 
 pkg_name() {
-  basename "$(realpath "$PATH_IN")"
+  basename "$(realpath "$1")"
+}
+
+copy_if_exists() {
+  local src="$1"
+  local dst="$2"
+
+  if [ -e "$src" ]; then
+    cp -r "$src" "$dst"
+  else
+    warn "No existe $src (omitido)"
+  fi
 }
 
 # -------------------------------------------------
 # pkg dirs <path>
 # -------------------------------------------------
 cmd_dirs() {
-  need_path
-  NAME=$(pkg_name)
+  local SRC="$1"
+  need_path "$SRC"
 
-  DEB="${NAME}-deb"
-  WIN="${NAME}-win"
+  local NAME
+  NAME=$(pkg_name "$SRC")
+  local WIN="${NAME}-win"
 
-  echo "[*] Generando estructuras desde $PATH_IN"
+  log "Reorganizando $NAME"
 
-  rm -rf "$DEB" "$WIN"
+  # -------- WINDOWS --------
+  log "Preparando $WIN"
+  rm -rf "$WIN"
+  mkdir -p "$WIN/bin" "$WIN/include"
 
-  # -------- DEB --------
-  mkdir -p "$DEB/DEBIAN"
-  mkdir -p "$DEB/usr/bin"
-  mkdir -p "$DEB/usr/include/$NAME"
+  copy_if_exists "$SRC/bin/win/." "$WIN/bin/"
+  copy_if_exists "$SRC/include/." "$WIN/include/"
 
-  cp "$PATH_IN/debian/control" "$DEB/DEBIAN/control"
+  if [ -f "$SRC/${NAME}.wxs" ]; then
+    cp "$SRC/${NAME}.wxs" "$WIN/"
+  else
+    error "No se encontró ${NAME}.wxs"
+  fi
 
-  cp -r "$PATH_IN/bin/linux/"* "$DEB/usr/bin/" 2>/dev/null || true
-  cp -r "$PATH_IN/include/"* "$DEB/usr/include/$NAME/" 2>/dev/null || true
+  # -------- DEBIAN --------
+  log "Preparando estructura Debian"
+  mkdir -p "$SRC/usr/bin" "$SRC/usr/include"
 
-  chmod 755 "$DEB/usr/bin/"* 2>/dev/null || true
-  chmod 644 "$DEB/DEBIAN/control"
+  copy_if_exists "$SRC/bin/linux/." "$SRC/usr/bin/"
+  copy_if_exists "$SRC/include/." "$SRC/usr/include/"
 
-  # -------- WIN --------
-  mkdir -p "$WIN/bin"
-  mkdir -p "$WIN/include"
+  chmod 755 "$SRC/usr/bin/"* 2>/dev/null || true
+  chmod 644 "$SRC/DEBIAN/control" 2>/dev/null || true
 
-  cp -r "$PATH_IN/bin/win/"* "$WIN/bin/" 2>/dev/null || true
-  cp -r "$PATH_IN/include/"* "$WIN/include/" 2>/dev/null || true
-  cp "$PATH_IN/win.wxs" "$WIN/"
-
-  echo "[✓] Generado:"
-  echo "  - $DEB"
-  echo "  - $WIN"
+  log "Listo"
+  echo "  - Windows: $WIN/"
+  echo "  - Debian:  $SRC/usr/"
 }
 
 # -------------------------------------------------
 # pkg compile deb <path>
 # -------------------------------------------------
 cmd_compile_deb() {
-  need_path
-  NAME=$(pkg_name)
-  DEB="${NAME}-deb"
+  local SRC="$1"
+  need_path "$SRC"
 
-  [ ! -d "$DEB/DEBIAN" ] && error "No existe $DEB (ejecuta pkg dirs primero)"
+  local NAME
+  NAME=$(pkg_name "$SRC")
 
-  echo "[*] Compilando $DEB.deb"
-  dpkg-deb -b "$DEB"
-  echo "[✓] $DEB.deb generado"
+  [ -d "$SRC/DEBIAN" ] || error "Falta DEBIAN/"
+  [ -d "$SRC/usr" ] || error "Falta usr/ (ejecuta pkg dirs)"
+
+  log "Compilando ${NAME}.deb"
+  dpkg-deb -b "$SRC" "${NAME}.deb"
+  log "${NAME}.deb generado"
 }
 
 # -------------------------------------------------
 # pkg compile win <path>
 # -------------------------------------------------
 cmd_compile_win() {
-  need_path
-  NAME=$(pkg_name)
-  WIN="${NAME}-win"
-  WXS="$WIN/win.wxs"
+  local SRC="$1"
+  need_path "$SRC"
 
-  [ ! -f "$WXS" ] && error "No existe $WXS (ejecuta pkg dirs primero)"
+  local NAME
+  NAME=$(pkg_name "$SRC")
+  local WIN="${NAME}-win"
+  local WXS="$WIN/${NAME}.wxs"
 
-  echo "[*] Compilando $NAME.msi con wixl"
-  (cd "$WIN" && wixl win.wxs -o "../$NAME.msi")
-  echo "[✓] $NAME.msi generado"
+  [ -f "$WXS" ] || error "No existe $WXS (ejecuta pkg dirs)"
+
+  log "Compilando ${NAME}.msi"
+  (cd "$WIN" && wixl "${NAME}.wxs" -o "../${NAME}.msi")
+  log "${NAME}.msi generado"
 }
 
 # -------------------------------------------------
 # Dispatch
 # -------------------------------------------------
-case "$CMD" in
+case "${1:-}" in
   dirs)
-    cmd_dirs
+    [ -n "${2:-}" ] || error "Uso: pkg dirs <path>"
+    cmd_dirs "$2"
     ;;
   compile)
-    case "$SUBCMD" in
-      deb) cmd_compile_deb ;;
-      win) cmd_compile_win ;;
+    case "${2:-}" in
+      deb) cmd_compile_deb "${3:-}" ;;
+      win) cmd_compile_win "${3:-}" ;;
       *) error "Uso: pkg compile {deb|win} <path>" ;;
     esac
     ;;
