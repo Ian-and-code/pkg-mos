@@ -54,6 +54,15 @@ cmd_dirs() {
   echo "  - Debian:  $SRC/usr/"
 }
 
+cmd_anti_dirs() {
+  local SRC="$1"
+  need_path "$SRC"
+  local NAME=$(pkg_name "$SRC")
+  WIN="${NAME}-win"
+  rm -rf "$WIN"
+  rm -rf "$SRC/usr/"
+}
+
 # -------------------------------------------------
 # pkg compile deb <path>
 # -------------------------------------------------
@@ -131,6 +140,7 @@ case "${1:-}" in
     cmd_compile_deb "$2"
     cmd_compile_rpm "$2"
     cmd_compile_win "$2"
+    cmd_anti_dirs "$2"
     ;;
   *)
     echo "Uso:"
